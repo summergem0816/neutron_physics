@@ -1,0 +1,91 @@
+lightning:
+  seed: ~
+  # mode: fit  #fit
+  
+  trainer:
+    accelerator: auto 
+    precision: 32
+    # Indices of GPUs used for training.
+    devices: [0, 1, 2, 3]
+    strategy: ddp
+
+data:
+  target: datasets.data_module.GenerationDataModule
+  params:
+    dataset:
+      target: datasets.realsr.RealAllScalesSRDataset
+      params:
+        preload: False
+        camera_types: [Nikon] # [Canon]
+        augmentation: False
+        test: False
+        dataroot: 'Path to RealSR dataset root directory'
+      # target: datasets.realsr.DIV2KDataset
+      # params:
+      #   preload: False
+      #   augmentation: False
+      #   test: False
+      #   dataroot: 'Path to DIV2K dataset root directory'
+    data_loader:
+      batch_size: 1
+      shuffle: false
+      num_workers: 8
+      drop_last: false
+
+
+model:
+  target: trainers.lit_generate.LitGenerator
+  params:
+    mode: 'flow' # 'ae_interp'
+    version: 'lpips'
+    root_dir: '/home/present091/nas/datasets/synthetic_datasets/RealSR'
+    camera_type: 'Nikon' # 'Canon'
+    ae_config:
+      target: models.ae.Autoencoder
+      params:
+        in_dim: 3
+        base_dim: 128
+        latent_dim: 4
+        use_skip: True
+      checkpoint: 'Path_to_pretrained_autoencoder_checkpoint'  # e.g., './checkpoints/autoencoder/autoencoder-step200000-version1.pth'
+
+    rf_config:
+      target: models.ncsn.ncsnpp.NCSNpp
+      params:
+        config:
+          training:
+            continuous: True
+          data:
+            centered: True
+            image_size: 32
+            num_channels: 4
+          model:
+            sigma_max: 50.
+            sigma_min: 0.01
+            num_scales: 1000
+            beta_min: 0.1
+            beta_max: 20.
+            dropout: 0.1
+            scale_by_sigma: False
+            ema_rate: 0.999
+            normalization: 'GroupNorm'
+            nonlinearity: 'swish'
+            nf: 128
+            ch_mult: [1, 2, 2, 2]
+            num_res_blocks: 4
+            attn_resolutions: []
+            resamp_with_conv: True
+            conditional: True
+            fir: False
+            fir_kernel: [1, 3, 3, 1]
+            skip_rescale: True
+            resblock_type: 'biggan'
+            progressive: 'none' # 'output_skip'
+            progressive_input: 'none' # input_skip' #'residual'
+            progressive_combine: 'sum'
+            attention_type: 'ddpm'
+            init_scale: 0.
+            embedding_type: 'positional' # 'fourier'
+            fourier_scale: 16
+            conv_size: 3
+      checkpoint: 'Path_to_pretrained_rectified_flow_checkpoint'  # e.g., './checkpoints/rectified_flow/rectified_flow-step400000-version1.pth'

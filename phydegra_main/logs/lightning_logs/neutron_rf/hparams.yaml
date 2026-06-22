@@ -1,0 +1,100 @@
+data_config:
+  train:
+    input_key: image
+    target_key: null
+  validate:
+    input_key: image
+    target_key: null
+rf_config:
+  interp_method: cubic_spline
+  loss_type: l2
+  lpips_scale: 0.1
+  lpips_weighting: false
+  physics_loss_scale: 1.0
+  t_learnable: false
+  test_y_channel: true
+ae_config:
+  target: models.ae.Autoencoder
+  params:
+    in_dim: 3
+    base_dim: 128
+    latent_dim: 4
+    use_skip: true
+  checkpoint: ./checkpoints/neutron_autoencoder/autoencoder-step100000-versionneutron_ae.pth
+model_config:
+  target: models.ncsn.ncsnpp.NCSNpp
+  params:
+    config:
+      training:
+        continuous: true
+      data:
+        centered: true
+        image_size: 32
+        num_channels: 4
+      model:
+        sigma_max: 50.0
+        sigma_min: 0.01
+        num_scales: 1000
+        beta_min: 0.1
+        beta_max: 20.0
+        dropout: 0.1
+        scale_by_sigma: false
+        ema_rate: 0.999
+        normalization: GroupNorm
+        nonlinearity: swish
+        nf: 128
+        ch_mult:
+        - 1
+        - 2
+        - 2
+        - 2
+        num_res_blocks: 4
+        attn_resolutions: []
+        resamp_with_conv: true
+        conditional: true
+        fir: false
+        fir_kernel:
+        - 1
+        - 3
+        - 3
+        - 1
+        skip_rescale: true
+        resblock_type: biggan
+        progressive: none
+        progressive_input: none
+        progressive_combine: sum
+        attention_type: ddpm
+        init_scale: 0.0
+        embedding_type: positional
+        fourier_scale: 16
+        conv_size: 3
+optimizer_config:
+  target: torch.optim.Adam
+  params:
+    weight_decay: 0.0
+    lr: 0.0002
+    betas:
+    - 0.9
+    - 0.999
+    eps: 1.0e-08
+scheduler_config:
+  target: torch.optim.lr_scheduler.CosineAnnealingLR
+  params:
+    T_max: 100000
+    eta_min: 1.0e-07
+compile: false
+sampler_type: rk45
+sample_N: 1000
+physics_config:
+  target: models.neutron.physics_forward.NeutronPhysicalForward
+  params:
+    blur_kernel_size: 21
+    blur_sigma_min: 0.8
+    blur_sigma_max: 2.5
+    scatter_kernel_size: 81
+    scatter_sigma: 12.0
+    scatter_strength_max: 0.08
+    readout_sigma_max: 0.01
+    flux_min: 10000.0
+    flux_max: 300000.0
+use_ema: false

@@ -1,0 +1,17 @@
+dataset:
+  target: datasets.realsr.RealAllScalesSRDataset
+  params:
+    preload: False
+    camera_types: [Canon]
+    augmentation: False
+    test: True
+    dataroot: 'Path_to_RealSR_dataset_root_directory'
+
+data_loader:
+  batch_size: 1
+  shuffle: false
+  num_workers: 8
+  drop_last: false
+
+batch_transform:
+  target: datasets.batch_transform.IdentityBatchTransform
