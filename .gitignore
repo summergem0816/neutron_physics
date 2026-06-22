@@ -1,0 +1,56 @@
+# Ignore everything at repository root by default
+/*
+
+# Keep the repository metadata and this ignore file
+!/.gitignore
+
+# Track the main codebase directory
+!/phydegra_main/
+
+# Inside phydegra_main, ignore generated artifacts and local runtime files
+phydegra_main/**/__pycache__/
+phydegra_main/**/*.py[cod]
+phydegra_main/*$py.class
+
+phydegra_main/.DS_Store
+phydegra_main/Thumbs.db
+phydegra_main/.idea/
+phydegra_main/.vscode/
+
+phydegra_main/.venv/
+phydegra_main/venv/
+phydegra_main/env/
+phydegra_main/ENV/
+
+phydegra_main/logs/
+phydegra_main/wandb/
+phydegra_main/runs/
+phydegra_main/results/
+phydegra_main/result/
+phydegra_main/outputs/
+phydegra_main/tmp/
+phydegra_main/temp/
+
+phydegra_main/checkpoints/
+phydegra_main/**/*.ckpt
+phydegra_main/**/*.pth
+phydegra_main/**/*.pt
+phydegra_main/**/*.bin
+phydegra_main/**/*.safetensors
+
+phydegra_main/dataset*/
+phydegra_main/data/
+phydegra_main/datasets*/
+
+phydegra_main/**/*.log
+phydegra_main/**/*.zip
+phydegra_main/**/*.tar
+phydegra_main/**/*.tar.gz
+phydegra_main/**/*.tgz
+phydegra_main/**/*.7z
+phydegra_main/**/*.rar
+
+phydegra_main/**/*.npy
+phydegra_main/**/*.npz
+phydegra_main/**/*.h5
+phydegra_main/**/*.hdf5
