@@ -73,6 +73,8 @@ class LitRectifiedFlow(pl.LightningModule):
 
         self.t_learnable = rf_config['t_learnable']
         self.t_params = LearnableTParameters(learnable=self.t_learnable)
+        self.t_anchor_reg_scale = rf_config.get('t_anchor_reg_scale', 0.0)
+        self.t_lr_scale = rf_config.get('t_lr_scale', 1.0)
 
         self.ae_ckpt_path = ae_config['checkpoint']
 
@@ -106,6 +108,11 @@ class LitRectifiedFlow(pl.LightningModule):
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
 
         self.train_resolutions = ["GT", "LQ_50", "LQ_30", "LQ_20", "LQ_10"]
+        self.register_buffer(
+            "t_anchor_positions",
+            torch.zeros(len(self.train_resolutions), dtype=torch.float32),
+            persistent=False,
+        )
         self.interp_method = rf_config['interp_method']
         if self.interp_method == 'linear':
             self.interp_fn = linear_interpolate
@@ -121,8 +128,11 @@ class LitRectifiedFlow(pl.LightningModule):
             raise NotImplementedError()
 
         self.lpips = LPIPS(replace_pooling=True, reduction="none")
+        self.flow_loss_scale = rf_config.get('flow_loss_scale', 1.0)
         self.lpips_scale = rf_config['lpips_scale']
         self.lpips_weighting = rf_config['lpips_weighting']
+        self.z_loss_scale = rf_config.get('z_loss_scale', 1.0)
+        self.z_cosine_weight = rf_config.get('z_cosine_weight', 0.2)
         self.physics_loss_scale = rf_config.get('physics_loss_scale', 1.0)
         
         self.test_y_channel = rf_config['test_y_channel']
@@ -164,6 +174,9 @@ class LitRectifiedFlow(pl.LightningModule):
         self.degradation_compressor.load_state_dict(autoencoder_ckpt["degradation_compressor"])
         self.decoder.load_state_dict(autoencoder_ckpt["decoder"])
         self.t_params.load_export_state_dict(autoencoder_ckpt["t_params"])
+        with torch.no_grad():
+            anchor_positions = self.t_params.positions_tensor(device=self.device, dtype=torch.float32)
+            self.t_anchor_positions.copy_(anchor_positions.detach().to(self.t_anchor_positions))
         if self.physics_forward is not None and "physics_forward" in autoencoder_ckpt:
             self.physics_forward.load_state_dict(autoencoder_ckpt["physics_forward"], strict=False)
 
@@ -183,7 +196,11 @@ class LitRectifiedFlow(pl.LightningModule):
         optim_params = [{'params': self.model.parameters()},]
 
         if self.t_learnable:
-            optim_params.append({'params': self.t_params.parameters()})
+            t_group = {'params': self.t_params.parameters()}
+            base_lr = self.optimizer_config.get('params', {}).get('lr')
+            if base_lr is not None:
+                t_group['lr'] = float(base_lr) * float(self.t_lr_scale)
+            optim_params.append(t_group)
 
         optimizer = instantiate_from_config_with_arg(self.optimizer_config, optim_params)
 
@@ -282,6 +299,21 @@ class LitRectifiedFlow(pl.LightningModule):
     def l2_loss(self, x, y):
         return torch.mean((x - y) ** 2, dim=tuple(range(1, x.dim())))
 
+    def t_anchor_loss(self, t_position: torch.Tensor) -> torch.Tensor:
+        anchor = self.t_anchor_positions.to(device=t_position.device, dtype=t_position.dtype)
+        return F.mse_loss(t_position[1:], anchor[1:], reduction='mean')
+
+    # Direct latent regression version kept for later ablation if needed.
+    # def latent_alignment_loss_direct(self, pred_z: torch.Tensor, target_z: torch.Tensor) -> torch.Tensor:
+    #     return self.loss(pred_z, target_z)
+
+    def latent_alignment_loss_weighted(self, pred_z: torch.Tensor, target_z: torch.Tensor) -> torch.Tensor:
+        diff_loss = self.loss(pred_z, target_z)
+        pred_flat = pred_z.flatten(1)
+        target_flat = target_z.flatten(1)
+        cosine_penalty = 1.0 - F.cosine_similarity(pred_flat, target_flat, dim=1)
+        return diff_loss + self.z_cosine_weight * cosine_penalty
+
     def loss_fn(self, latents, imgs, feature_hr, clean_img, eps=1e-3):
         t_position = self.t_positions
         t = sample_t_uniform(latents[0].shape[0]).to(latents[0].device)
@@ -291,8 +323,13 @@ class LitRectifiedFlow(pl.LightningModule):
         pred = self.model(interp, t * 999)
 
         loss_flow = self.loss(deriv, pred)
-        total_loss = loss_flow
+        total_loss = self.flow_loss_scale * loss_flow
         logs = {'flow:': loss_flow.mean()}
+
+        if self.t_learnable and self.t_anchor_reg_scale > 0:
+            loss_t_anchor = self.t_anchor_loss(t_position)
+            logs['t_anchor'] = loss_t_anchor
+            total_loss += self.t_anchor_reg_scale * loss_t_anchor
 
         if self.lpips_scale > 0:
             idx = torch.searchsorted(t_position, t, right=True)
@@ -315,7 +352,13 @@ class LitRectifiedFlow(pl.LightningModule):
                 raise ValueError(f"Unknown interp_method: {self.interp_method}")
 
             batch_indices = torch.arange(imgs.shape[1], device=imgs.device)
+            target_z = latents[idx, batch_indices, :, :, :]
             x = imgs[idx, batch_indices, :, :, :]
+
+            if self.z_loss_scale > 0:
+                loss_z = self.latent_alignment_loss_weighted(pred_z, target_z)
+                logs['z_latent'] = loss_z.mean()
+                total_loss += self.z_loss_scale * loss_z
 
             if self.physics_forward is not None:
                 pred_x = self.physics_forward(clean_img, t, degradation_latent=pred_z, sample_noise=False)["degraded"]
@@ -404,6 +447,12 @@ class LitRectifiedFlow(pl.LightningModule):
 
         log_dict['nfe'] = self.nfe_metric.compute()
         self.nfe_metric.reset()
+        log_dict['t_50'] = self.t_positions[1].detach()
+        log_dict['t_30'] = self.t_positions[2].detach()
+        log_dict['t_20'] = self.t_positions[3].detach()
+        log_dict['t_10'] = self.t_positions[4].detach()
+        if self.t_anchor_reg_scale > 0:
+            log_dict['t_anchor_drift'] = self.t_anchor_loss(self.t_positions).detach()
 
         self.log_dict(
             log_dict,

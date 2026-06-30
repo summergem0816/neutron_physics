@@ -30,6 +30,9 @@ params:
   rf_config:
     interp_method: "cubic_spline"
     loss_type: "l2"
+    flow_loss_scale: 1.0
+    z_loss_scale: 1.0
+    z_cosine_weight: 0.2
     lpips_scale: 1e-1
     lpips_weighting: False
     physics_loss_scale: 1.0
