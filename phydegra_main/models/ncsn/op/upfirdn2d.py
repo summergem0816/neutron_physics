@@ -1,4 +1,5 @@
 import os
+import warnings
 
 import torch
 from torch.nn import functional as F
@@ -7,13 +8,47 @@ from torch.utils.cpp_extension import load
 
 
 module_path = os.path.dirname(__file__)
-upfirdn2d_op = load(
-    "upfirdn2d",
-    sources=[
-        os.path.join(module_path, "upfirdn2d.cpp"),
-        os.path.join(module_path, "upfirdn2d_kernel.cu"),
-    ],
-)
+# Original code for Linux / full CUDA toolkit environments:
+# upfirdn2d_op = load(
+#     "upfirdn2d",
+#     sources=[
+#         os.path.join(module_path, "upfirdn2d.cpp"),
+#         os.path.join(module_path, "upfirdn2d_kernel.cu"),
+#     ],
+# )
+#
+# Temporary Windows fallback patch:
+# Keep the original block above commented out, and use lazy loading below so
+# machines without CUDA_HOME / cl.exe can still run by falling back to the
+# native PyTorch implementation.
+upfirdn2d_op = None
+_upfirdn2d_load_attempted = False
+
+
+def _get_upfirdn2d_op():
+    global upfirdn2d_op, _upfirdn2d_load_attempted
+    if upfirdn2d_op is not None:
+        return upfirdn2d_op
+    if _upfirdn2d_load_attempted:
+        return None
+
+    _upfirdn2d_load_attempted = True
+    try:
+        upfirdn2d_op = load(
+            "upfirdn2d",
+            sources=[
+                os.path.join(module_path, "upfirdn2d.cpp"),
+                os.path.join(module_path, "upfirdn2d_kernel.cu"),
+            ],
+        )
+    except (OSError, RuntimeError) as error:
+        warnings.warn(
+            "Failed to build/load CUDA upfirdn2d extension; falling back to "
+            f"the native PyTorch implementation. Original error: {error}"
+        )
+        upfirdn2d_op = None
+
+    return upfirdn2d_op
 
 
 class UpFirDn2dBackward(Function):
@@ -21,6 +56,28 @@ class UpFirDn2dBackward(Function):
     def forward(
         ctx, grad_output, kernel, grad_kernel, up, down, pad, g_pad, in_size, out_size
     ):
+        # Original code:
+        # up_x, up_y = up
+        # down_x, down_y = down
+        # g_pad_x0, g_pad_x1, g_pad_y0, g_pad_y1 = g_pad
+        #
+        # grad_output = grad_output.reshape(-1, out_size[0], out_size[1], 1)
+        #
+        # grad_input = upfirdn2d_op.upfirdn2d(
+        #     grad_output,
+        #     grad_kernel,
+        #     down_x,
+        #     down_y,
+        #     up_x,
+        #     up_y,
+        #     g_pad_x0,
+        #     g_pad_x1,
+        #     g_pad_y0,
+        #     g_pad_y1,
+        # )
+        op = _get_upfirdn2d_op()
+        if op is None:
+            raise RuntimeError("upfirdn2d CUDA extension is unavailable")
 
         up_x, up_y = up
         down_x, down_y = down
@@ -28,7 +85,7 @@ class UpFirDn2dBackward(Function):
 
         grad_output = grad_output.reshape(-1, out_size[0], out_size[1], 1)
 
-        grad_input = upfirdn2d_op.upfirdn2d(
+        grad_input = op.upfirdn2d(
             grad_output,
             grad_kernel,
             down_x,
@@ -62,10 +119,28 @@ class UpFirDn2dBackward(Function):
     @staticmethod
     def backward(ctx, gradgrad_input):
         kernel, = ctx.saved_tensors
+        # Original code:
+        # gradgrad_input = gradgrad_input.reshape(-1, ctx.in_size[2], ctx.in_size[3], 1)
+        #
+        # gradgrad_out = upfirdn2d_op.upfirdn2d(
+        #     gradgrad_input,
+        #     kernel,
+        #     ctx.up_x,
+        #     ctx.up_y,
+        #     ctx.down_x,
+        #     ctx.down_y,
+        #     ctx.pad_x0,
+        #     ctx.pad_x1,
+        #     ctx.pad_y0,
+        #     ctx.pad_y1,
+        # )
+        op = _get_upfirdn2d_op()
+        if op is None:
+            raise RuntimeError("upfirdn2d CUDA extension is unavailable")
 
         gradgrad_input = gradgrad_input.reshape(-1, ctx.in_size[2], ctx.in_size[3], 1)
 
-        gradgrad_out = upfirdn2d_op.upfirdn2d(
+        gradgrad_out = op.upfirdn2d(
             gradgrad_input,
             kernel,
             ctx.up_x,
@@ -88,6 +163,18 @@ class UpFirDn2dBackward(Function):
 class UpFirDn2d(Function):
     @staticmethod
     def forward(ctx, input, kernel, up, down, pad):
+        # Original code:
+        # up_x, up_y = up
+        # down_x, down_y = down
+        # pad_x0, pad_x1, pad_y0, pad_y1 = pad
+        # ...
+        # out = upfirdn2d_op.upfirdn2d(
+        #     input, kernel, up_x, up_y, down_x, down_y, pad_x0, pad_x1, pad_y0, pad_y1
+        # )
+        op = _get_upfirdn2d_op()
+        if op is None:
+            raise RuntimeError("upfirdn2d CUDA extension is unavailable")
+
         up_x, up_y = up
         down_x, down_y = down
         pad_x0, pad_x1, pad_y0, pad_y1 = pad
@@ -115,7 +202,7 @@ class UpFirDn2d(Function):
 
         ctx.g_pad = (g_pad_x0, g_pad_x1, g_pad_y0, g_pad_y1)
 
-        out = upfirdn2d_op.upfirdn2d(
+        out = op.upfirdn2d(
             input, kernel, up_x, up_y, down_x, down_y, pad_x0, pad_x1, pad_y0, pad_y1
         )
         # out = out.view(major, out_h, out_w, minor)
@@ -149,9 +236,23 @@ def upfirdn2d(input, kernel, up=1, down=1, pad=(0, 0)):
         )
 
     else:
-        out = UpFirDn2d.apply(
-            input, kernel, (up, up), (down, down), (pad[0], pad[1], pad[0], pad[1])
-        )
+        # Original code:
+        # out = UpFirDn2d.apply(
+        #     input, kernel, (up, up), (down, down), (pad[0], pad[1], pad[0], pad[1])
+        # )
+        #
+        # Temporary Windows fallback:
+        # If CUDA extension build/load fails, fall back to native PyTorch op
+        # instead of aborting import/training.
+        op = _get_upfirdn2d_op()
+        if op is None:
+            out = upfirdn2d_native(
+                input, kernel, up, up, down, down, pad[0], pad[1], pad[0], pad[1]
+            )
+        else:
+            out = UpFirDn2d.apply(
+                input, kernel, (up, up), (down, down), (pad[0], pad[1], pad[0], pad[1])
+            )
 
     return out
 

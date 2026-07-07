@@ -33,7 +33,11 @@ params:
     flow_loss_scale: 1.0
     z_loss_scale: 1.0
     z_cosine_weight: 0.2
-    lpips_scale: 1e-1
+    # Original setting:
+    # lpips_scale: 1e-1
+    # Temporary Windows setting: disable LPIPS to avoid downloading
+    # pretrained weights during stage-2 training.
+    lpips_scale: 0.0
     lpips_weighting: False
     physics_loss_scale: 1.0
     t_learnable: False

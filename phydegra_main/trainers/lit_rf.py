@@ -33,6 +33,7 @@ import random
 import torch.distributed as dist
 
 import os
+import warnings
 
 from piq import LPIPS
 
@@ -127,13 +128,29 @@ class LitRectifiedFlow(pl.LightningModule):
         else:
             raise NotImplementedError()
 
-        self.lpips = LPIPS(replace_pooling=True, reduction="none")
         self.flow_loss_scale = rf_config.get('flow_loss_scale', 1.0)
         self.lpips_scale = rf_config['lpips_scale']
         self.lpips_weighting = rf_config['lpips_weighting']
         self.z_loss_scale = rf_config.get('z_loss_scale', 1.0)
         self.z_cosine_weight = rf_config.get('z_cosine_weight', 0.2)
         self.physics_loss_scale = rf_config.get('physics_loss_scale', 1.0)
+        # Original code:
+        # self.lpips = LPIPS(replace_pooling=True, reduction="none")
+        #
+        # Temporary Windows/offline fallback:
+        # If LPIPS pretrained weights cannot be downloaded, keep training with
+        # the remaining losses instead of aborting at startup.
+        self.lpips = None
+        if self.lpips_scale > 0:
+            try:
+                self.lpips = LPIPS(replace_pooling=True, reduction="none")
+            except Exception as error:
+                warnings.warn(
+                    "Failed to initialize LPIPS perceptual loss. "
+                    "Continuing without LPIPS for this temporary run. "
+                    f"Original error: {error}"
+                )
+                self.lpips = None
         
         self.test_y_channel = rf_config['test_y_channel']
 
@@ -331,7 +348,17 @@ class LitRectifiedFlow(pl.LightningModule):
             logs['t_anchor'] = loss_t_anchor
             total_loss += self.t_anchor_reg_scale * loss_t_anchor
 
-        if self.lpips_scale > 0:
+        # Original code:
+        # if self.lpips_scale > 0:
+        #
+        # Temporary Windows/offline fallback:
+        # We still want latent/physics supervision even if LPIPS weights are
+        # unavailable, so gate this branch on any downstream loss needing
+        # reconstructed predictions.
+        need_reconstruction_losses = (
+            self.lpips_scale > 0 or self.z_loss_scale > 0 or self.physics_loss_scale > 0
+        )
+        if need_reconstruction_losses:
             idx = torch.searchsorted(t_position, t, right=True)
             idx = torch.clamp(idx, max=t_position.shape[0] - 1)
             t_right = t_position[idx]
@@ -370,11 +397,11 @@ class LitRectifiedFlow(pl.LightningModule):
 
             r = delta_t1 / seg_len
 
-            lpips_weight = 1.0 / (r + eps) if self.lpips_weighting else 1.0
-            
-            loss_lpips = self.lpips(pred_x * 0.5 + 0.5, x * 0.5 + 0.5) * lpips_weight
-            logs['lpips'] = loss_lpips.mean()
-            total_loss += self.lpips_scale * loss_lpips
+            if self.lpips_scale > 0 and self.lpips is not None:
+                lpips_weight = 1.0 / (r + eps) if self.lpips_weighting else 1.0
+                loss_lpips = self.lpips(pred_x * 0.5 + 0.5, x * 0.5 + 0.5) * lpips_weight
+                logs['lpips'] = loss_lpips.mean()
+                total_loss += self.lpips_scale * loss_lpips
 
             if self.physics_forward is not None and self.physics_loss_scale > 0:
                 loss_phys = self.loss(pred_x, x)
