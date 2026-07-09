@@ -57,3 +57,27 @@ class RectifiedFlowCheckpoint(ModelCheckpoint):
             checkpoint_dict["t_params"] = pl_module.t_params.export_state_dict()
         torch.save(checkpoint_dict, save_path)
         print(f"Checkpoint saved at {save_path}")
+
+
+class ZOnlyDegradationCheckpoint(ModelCheckpoint):
+    def __init__(self, save_dir: str = "./checkpoints/neutron_deg_zonly/", save_interval: int = 10000, **kwargs):
+        super().__init__(dirpath=save_dir, every_n_train_steps=save_interval, save_top_k=-1, **kwargs)
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+
+    @rank_zero_only
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        version = getattr(pl_module, "version", "temp")
+        global_step = trainer.global_step
+        filename = f"deg_zonly-step{global_step}-version{version}.pth"
+        save_path = os.path.join(self.save_dir, filename)
+
+        checkpoint_dict = {
+            "predictor": pl_module.predictor.state_dict(),
+        }
+        if getattr(pl_module, "physics_forward", None) is not None:
+            checkpoint_dict["physics_forward"] = pl_module.physics_forward.state_dict()
+        if hasattr(pl_module, "t_params"):
+            checkpoint_dict["t_params"] = pl_module.t_params.export_state_dict()
+        torch.save(checkpoint_dict, save_path)
+        print(f"Checkpoint saved at {save_path}")

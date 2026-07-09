@@ -55,6 +55,13 @@ def main() -> None:
             if getattr(model, "physics_forward", None) is not None and "physics_forward" in checkpoint:
                 model.physics_forward.load_state_dict(checkpoint["physics_forward"], strict=False)
             print(f"[AE] Checkpoint loaded from {checkpoint_path}")
+        elif model_type.endswith("zonly"):
+            model.predictor.load_state_dict(checkpoint["predictor"])
+            if "t_params" in checkpoint:
+                model.t_params.load_export_state_dict(checkpoint["t_params"])
+            if getattr(model, "physics_forward", None) is not None and "physics_forward" in checkpoint:
+                model.physics_forward.load_state_dict(checkpoint["physics_forward"], strict=False)
+            print(f"[ZOnly] Checkpoint loaded from {checkpoint_path}")
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
 
