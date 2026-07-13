@@ -16,11 +16,41 @@ from utils.neutron_schedule import export_t_map_from_state_dict
 
 
 LEVEL_KEYS = ["LQ_50", "LQ_30", "LQ_20", "LQ_10"]
+PARTICLE_SUFFIXES = {"1k", "2k", "3k", "5k"}
 
 
 def _load_rgb_tensor(path: Path) -> torch.Tensor:
-    img = np.array(Image.open(path).convert("RGB")).astype(np.float32) / 127.5 - 1.0
+    gray = np.array(Image.open(path).convert("L"))
+    img = np.repeat(gray[:, :, None], 3, axis=2).astype(np.float32) / 127.5 - 1.0
     return torch.from_numpy(img.transpose(2, 0, 1)).unsqueeze(0)
+
+
+def _split_prefix_and_suffix(stem: str) -> tuple[str, str] | None:
+    if "_" not in stem:
+        return None
+    prefix, suffix = stem.rsplit("_", 1)
+    if suffix not in PARTICLE_SUFFIXES:
+        return None
+    return prefix, suffix
+
+
+def _collect_anchor_image_paths(hq_dir: Path) -> list[Path]:
+    all_files = sorted([path for path in hq_dir.iterdir() if path.is_file()])
+    anchor_files = []
+    generic_files = []
+
+    for path in all_files:
+        parsed = _split_prefix_and_suffix(path.stem)
+        if parsed is None:
+            generic_files.append(path)
+            continue
+        _, suffix = parsed
+        if suffix == "1k":
+            anchor_files.append(path)
+
+    if anchor_files:
+        return sorted(generic_files + anchor_files)
+    return all_files
 
 
 def _pad_to_multiple(x: torch.Tensor, multiple: int = 2):
@@ -47,6 +77,7 @@ def parse_args():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--max_samples", type=int, default=None)
     parser.add_argument("--sample_noise", action="store_true")
+    parser.add_argument("--readout_sigma_max", type=float, default=None)
     return parser.parse_args()
 
 
@@ -68,18 +99,30 @@ def main():
     if "physics_forward" in zonly_ckpt and model.physics_forward is not None:
         model.physics_forward.load_state_dict(zonly_ckpt["physics_forward"], strict=False)
 
+    if args.readout_sigma_max is not None and model.physics_forward is not None:
+        model.physics_forward.readout_sigma_max = float(args.readout_sigma_max)
+
     t_state = zonly_ckpt.get("t_params")
     if t_state is not None:
         model.t_params.load_export_state_dict(t_state)
     t_map = export_t_map_from_state_dict(t_state, device=device, dtype=torch.float32)
 
     hq_dir = Path(args.hq_dir)
-    image_paths = sorted([path for path in hq_dir.iterdir() if path.is_file()])
+    image_paths = _collect_anchor_image_paths(hq_dir)
     if args.max_samples is not None:
         image_paths = image_paths[: args.max_samples]
 
     output_root = Path(args.output)
     output_root.mkdir(parents=True, exist_ok=True)
+
+    if model.physics_forward is not None:
+        print(
+            f"Using physics noise settings: "
+            f"readout_sigma_max={model.physics_forward.readout_sigma_max}, "
+            f"scatter_strength_max={model.physics_forward.scatter_strength_max}, "
+            f"sample_noise={args.sample_noise}"
+        )
+    print(f"Using {len(image_paths)} HQ anchors from {hq_dir}")
 
     with torch.no_grad():
         for image_path in image_paths:
@@ -107,6 +150,10 @@ def main():
 
                 metadata[key] = {
                     "t": float(t_map[key].item()),
+                    "readout_sigma_max": float(model.physics_forward.readout_sigma_max),
+                    "scatter_strength_max": float(model.physics_forward.scatter_strength_max),
+                    "sample_noise": bool(args.sample_noise),
+                    "input_mode": "grayscale_replicated_rgb",
                     "sigma_geo": float(physics_out["sigma_geo"].mean().item()),
                     "sigma_det": float(physics_out["sigma_det"].mean().item()),
                     "readout_sigma": float(physics_out["readout_sigma"].mean().item()),

@@ -166,6 +166,8 @@ class NeutronPhysicalForward(nn.Module):
         latent_channels: int = 4,
         trainable_blur: bool = True,
         trainable_noise_heads: bool = True,
+        shared_channel_stochastic: bool = False,
+        force_grayscale: bool = False,
     ):
         super().__init__()
         self.geo_kernel_size = geo_kernel_size
@@ -178,6 +180,8 @@ class NeutronPhysicalForward(nn.Module):
         self.scatter_strength_max = scatter_strength_max
         self.readout_sigma_max = readout_sigma_max
         self.latent_modulation_scale = latent_modulation_scale
+        self.shared_channel_stochastic = shared_channel_stochastic
+        self.force_grayscale = force_grayscale
 
         sigma_geo_mm = object_detector_distance_mm * math.tan(math.radians(theta_div_deg))
         sigma_geo_px = sigma_geo_mm / detector_pitch_mm
@@ -218,6 +222,12 @@ class NeutronPhysicalForward(nn.Module):
             )
             outputs.append(_conv_same(x[idx:idx + 1], kernel))
         return torch.cat(outputs, dim=0)
+
+    def _repeat_gray_channels(self, x: torch.Tensor) -> torch.Tensor:
+        if not self.force_grayscale or x.shape[1] <= 1:
+            return x
+        gray = x.mean(dim=1, keepdim=True)
+        return gray.repeat(1, x.shape[1], 1, 1)
 
     def _effective_particle_count(self, t: torch.Tensor, flux_delta: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         base_count = self._base_particle_count(t)
@@ -284,7 +294,12 @@ class NeutronPhysicalForward(nn.Module):
     ) -> torch.Tensor:
         flux = effective_particle_count.view(-1, 1, 1, 1).to(device=x.device, dtype=x.dtype)
         expected_counts = torch.clamp(x, min=0.0) * flux
-        sampled = torch.poisson(expected_counts) if sample_noise else expected_counts
+        if self.shared_channel_stochastic and expected_counts.shape[1] > 1:
+            expected_gray = expected_counts.mean(dim=1, keepdim=True)
+            sampled = torch.poisson(expected_gray) if sample_noise else expected_gray
+            sampled = sampled.repeat(1, expected_counts.shape[1], 1, 1)
+        else:
+            sampled = torch.poisson(expected_counts) if sample_noise else expected_counts
         return sampled / flux.clamp_min(1e-8)
 
     def apply_readout_noise(
@@ -300,7 +315,18 @@ class NeutronPhysicalForward(nn.Module):
         sigma_scalar = sigma_map.mean(dim=(1, 2, 3))
         if not sample_noise:
             return x, sigma_scalar
-        return x + torch.randn_like(x) * sigma_map, sigma_scalar
+        if self.shared_channel_stochastic and x.shape[1] > 1:
+            noise = torch.randn(
+                x.shape[0],
+                1,
+                x.shape[2],
+                x.shape[3],
+                device=x.device,
+                dtype=x.dtype,
+            )
+        else:
+            noise = torch.randn_like(x)
+        return x + noise * sigma_map, sigma_scalar
 
     def forward(
         self,
@@ -309,6 +335,7 @@ class NeutronPhysicalForward(nn.Module):
         degradation_latent: torch.Tensor | None = None,
         sample_noise: bool = True,
     ) -> dict[str, torch.Tensor]:
+        clean = self._repeat_gray_channels(clean)
         cond = self.condition_encoder(degradation_latent, t, output_hw=clean.shape[-2:])
         source_out, source_stats = self.apply_source_flux(clean, t, cond["flux_delta"])
 
@@ -321,24 +348,28 @@ class NeutronPhysicalForward(nn.Module):
             t,
             cond["interaction_gate"],
         )
+        blur_out = self._repeat_gray_channels(blur_out)
+        interaction_residual = self._repeat_gray_channels(interaction_residual)
 
         scatter, scatter_strength = self.apply_scatter_background(
             blur_out,
             t,
             cond["scatter_map"],
         )
-        pre_poisson = blur_out + scatter
+        pre_poisson = self._repeat_gray_channels(blur_out + scatter)
         poisson_out = self.apply_poisson_layer(
             pre_poisson,
             source_stats["particle_count_effective"],
             sample_noise=sample_noise,
         )
+        poisson_out = self._repeat_gray_channels(poisson_out)
         noisy_out, readout_sigma = self.apply_readout_noise(
             poisson_out,
             t,
             cond["readout_map"],
             sample_noise=sample_noise,
         )
+        noisy_out = self._repeat_gray_channels(noisy_out)
         degraded = noisy_out.clamp(0.0, 1.0).mul(2.0).sub(1.0)
 
         return {

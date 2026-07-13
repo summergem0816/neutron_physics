@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 from torchmetrics import MeanMetric
 
+from losses.neutron_degradation_consistency import DegradationConsistencyLoss
 from utils.common import frozen_module, instantiate_from_config, instantiate_from_config_with_arg
 from utils.metrics import calculate_psnr_pt
 from utils.neutron_schedule import LEARNABLE_T_KEYS, LearnableTParameters
@@ -44,12 +45,23 @@ class LitZOnlyDegradation(pl.LightningModule):
         self.t_learnable = bool(zonly_config.get("t_learnable", False))
         self.t_params = LearnableTParameters(learnable=self.t_learnable)
 
-        self.img_loss_scale = float(zonly_config.get("img_loss_scale", 1.0))
-        self.z_loss_scale = float(zonly_config.get("z_loss_scale", 0.5))
         self.z_cosine_weight = float(zonly_config.get("z_cosine_weight", 0.2))
         self.t_anchor_reg_scale = float(zonly_config.get("t_anchor_reg_scale", 0.0))
         self.charbonnier_eps = float(zonly_config.get("charbonnier_eps", 1e-3))
         self.test_y_channel = bool(zonly_config.get("test_y_channel", True))
+        self.consistency_loss = DegradationConsistencyLoss(
+            mean_loss_scale=float(zonly_config.get("mean_loss_scale", zonly_config.get("img_loss_scale", 1.0))),
+            structure_loss_scale=float(zonly_config.get("structure_loss_scale", 0.0)),
+            noise_stats_loss_scale=float(zonly_config.get("noise_stats_loss_scale", 0.0)),
+            noise_map_loss_scale=float(zonly_config.get("noise_map_loss_scale", 0.0)),
+            z_loss_scale=float(zonly_config.get("z_loss_scale", 0.5)),
+            z_cosine_weight=self.z_cosine_weight,
+            charbonnier_eps=self.charbonnier_eps,
+            lowpass_kernel_size=int(zonly_config.get("lowpass_kernel_size", 21)),
+            lowpass_sigma=float(zonly_config.get("lowpass_sigma", 2.0)),
+            noise_local_window_size=int(zonly_config.get("noise_local_window_size", 9)),
+            noise_map_pool_size=int(zonly_config.get("noise_map_pool_size", 8)),
+        )
 
         self.val_psnr = nn.ModuleDict({key: MeanMetric(dist_sync_on_step=True) for key in LEVEL_KEYS})
         self.register_buffer(
@@ -170,8 +182,14 @@ class LitZOnlyDegradation(pl.LightningModule):
         content_dict = self.autoencoder.encode_content(clean)
         z_content = content_dict["z_c"]
 
-        loss_img = torch.zeros((), device=clean.device)
-        loss_z = torch.zeros((), device=clean.device)
+        loss_parts = {
+            "mean": torch.zeros((), device=clean.device),
+            "structure": torch.zeros((), device=clean.device),
+            "noise_stats": torch.zeros((), device=clean.device),
+            "noise_map": torch.zeros((), device=clean.device),
+            "z": torch.zeros((), device=clean.device),
+            "total": torch.zeros((), device=clean.device),
+        }
         outputs_by_level: dict[str, dict[str, torch.Tensor]] = {}
 
         for key in LEVEL_KEYS:
@@ -189,16 +207,32 @@ class LitZOnlyDegradation(pl.LightningModule):
                 )
                 pred_img = physics_out["degraded"]
                 outputs_by_level[key] = physics_out
+                pred_sample = None
+                if self.consistency_loss.needs_noise_sample:
+                    sample_out = self.physics_forward(
+                        clean=clean,
+                        t=t,
+                        degradation_latent=pred_z,
+                        sample_noise=True,
+                    )
+                    pred_sample = sample_out["degraded"]
             else:
                 pred_img = self.autoencoder.reconstruct_from_content_degradation(pred_z, content_dict["features"])
+                pred_sample = None
 
-            loss_img = loss_img + self.charbonnier_loss(pred_img, batch[key])
-            loss_z = loss_z + self.latent_alignment_loss(pred_z, target_z)
+            _, parts = self.consistency_loss(
+                pred_mean=pred_img,
+                real_lq=batch[key],
+                pred_z=pred_z,
+                target_z=target_z,
+                pred_sample=pred_sample,
+            )
+            for part_key in loss_parts:
+                loss_parts[part_key] = loss_parts[part_key] + parts[part_key]
 
         level_count = float(len(LEVEL_KEYS))
-        loss_img = loss_img / level_count
-        loss_z = loss_z / level_count
-        total_loss = self.img_loss_scale * loss_img + self.z_loss_scale * loss_z
+        loss_parts = {key: value / level_count for key, value in loss_parts.items()}
+        total_loss = loss_parts["total"]
 
         if self.t_learnable and self.t_anchor_reg_scale > 0:
             loss_t_anchor = self.t_anchor_loss()
@@ -209,8 +243,11 @@ class LitZOnlyDegradation(pl.LightningModule):
         log_prefix = "train" if mode == "train" else "val"
         log_dict = {
             f"{log_prefix}/loss": total_loss,
-            f"{log_prefix}/img": loss_img,
-            f"{log_prefix}/z": loss_z,
+            f"{log_prefix}/mean": loss_parts["mean"],
+            f"{log_prefix}/structure": loss_parts["structure"],
+            f"{log_prefix}/noise_stats": loss_parts["noise_stats"],
+            f"{log_prefix}/noise_map": loss_parts["noise_map"],
+            f"{log_prefix}/z": loss_parts["z"],
             f"{log_prefix}/t_anchor": loss_t_anchor,
         }
         for key in LEARNABLE_T_KEYS:

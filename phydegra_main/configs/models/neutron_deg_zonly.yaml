@@ -54,16 +54,25 @@ params:
       particle_count_min: 10000000.0
       particle_count_max: 300000000.0
       scatter_strength_max: 0.08
-      readout_sigma_max: 0.01
+      readout_sigma_max: 0.03
       latent_modulation_scale: 0.15
       latent_channels: 4
       trainable_blur: True
       trainable_noise_heads: True
+      shared_channel_stochastic: True
+      force_grayscale: True
 
   zonly_config:
-    img_loss_scale: 1.0
+    mean_loss_scale: 1.0
+    structure_loss_scale: 0.2
+    noise_stats_loss_scale: 0.02
+    noise_map_loss_scale: 0.01
     z_loss_scale: 0.5
     z_cosine_weight: 0.2
+    lowpass_kernel_size: 21
+    lowpass_sigma: 2.0
+    noise_local_window_size: 9
+    noise_map_pool_size: 8
     t_learnable: False
     t_anchor_reg_scale: 0.0
     charbonnier_eps: 1e-3

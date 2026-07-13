@@ -44,7 +44,8 @@ def _split_prefix_and_suffix(stem: str) -> tuple[str, str] | None:
 
 
 def _load_rgb(path: Path) -> np.ndarray:
-    return np.array(Image.open(path).convert("RGB"))
+    gray = np.array(Image.open(path).convert("L"))
+    return np.repeat(gray[:, :, None], 3, axis=2)
 
 
 def _to_tensor_image(img: np.ndarray) -> np.ndarray:
