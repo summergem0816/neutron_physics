@@ -1,0 +1,17 @@
+dataset:
+  target: datasets.neutron_deg.NeutronTrajectoryDataset
+  params:
+    dataroot: "./dataset_neutron/val"
+    hq_subdir: "HQ"
+    lq_subdir: "LQ"
+    augmentation: False
+    test: True
+    patch_size: 256
+    preload: False
+
+data_loader:
+  batch_size: 6
+  shuffle: false
+  num_workers: 1
+  drop_last: false
+  pin_memory: true

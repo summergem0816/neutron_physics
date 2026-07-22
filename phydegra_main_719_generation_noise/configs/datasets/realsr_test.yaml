@@ -1,0 +1,19 @@
+dataset:
+  target: datasets.realsr.RealMixedScaleSRDataset
+  params:
+    preload: True
+    camera_types: [Canon] # [Canon, Nikon]
+    patch_size: ~
+    scale: [1, 2, 3, 4]
+    augmentation: False
+    test: True
+    dataroot: 'Path_to_RealSR_dataset_root_directory'
+
+data_loader:
+  batch_size: 1
+  shuffle: false
+  num_workers: 8
+  drop_last: false
+
+batch_transform:
+  target: datasets.batch_transform.IdentityBatchTransform
