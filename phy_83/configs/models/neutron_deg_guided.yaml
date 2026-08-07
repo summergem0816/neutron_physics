@@ -1,0 +1,75 @@
+target: trainers.lit_deg_guided.LitGuidedDegradation
+params:
+  misc_config:
+    warmup: 5000
+
+  optimizer_config:
+    target: torch.optim.Adam
+    params:
+      lr: !!float 2e-4
+      weight_decay: 0.
+      betas: [0.9, 0.999]
+      eps: !!float 1e-8
+
+  scheduler_config:
+    target: torch.optim.lr_scheduler.CosineAnnealingLR
+    params:
+      T_max: 100000
+      eta_min: !!float 1e-7
+
+  predictor_config:
+    target: models.neutron.deg_condition_predictor.DegConditionPredictor
+    params:
+      latent_channels: 4
+      clean_channels: 3
+      hidden_dim: 64
+      time_embed_dim: 64
+
+  guided_config:
+    img_loss_scale: 1.0
+    z_loss_scale: 0.5
+    monotonic_loss_scale: 0.1
+    smooth_loss_scale: 0.05
+    tv_loss_scale: 0.01
+    charbonnier_eps: !!float 1e-3
+    t_learnable: False
+    test_y_channel: True
+    physics_finetune_start: 20000
+    physics_lr_scale: 0.25
+    physics_trainable_modules: ["condition_encoder", "blur_interaction"]
+    physics_trainable_scalars: []
+
+  ae_config:
+    target: models.ae.Autoencoder
+    params:
+      in_dim: 3
+      base_dim: 256
+      latent_dim: 4
+      use_skip: True
+      global_deg_dim: 256
+      local_deg_dim: 4
+      encoder_kernel_size: 13
+      generator_kernel_size: 3
+      n_feats_map: 16
+    checkpoint: "./checkpoints/neutron_autoencoder/autoencoder-step100000-versionneutron_ae.pth"
+
+  physics_config:
+    target: models.neutron.physics_forward_guided.GuidedNeutronPhysicalForward
+    params:
+      geo_kernel_size: 21
+      det_kernel_size: 15
+      scatter_kernel_size: 81
+      theta_div_deg: 1.0
+      object_detector_distance_mm: 50.0
+      detector_pitch_mm: 0.66
+      detector_pixel_width_mm: 0.6
+      scintillator_sigma_px_init: 0.35
+      flux_ref_max: 300000000.0
+      particle_count_min: 10000000.0
+      particle_count_max: 300000000.0
+      scatter_strength_max: 0.08
+      readout_sigma_max: 0.01
+      latent_modulation_scale: 0.15
+      latent_channels: 4
+      trainable_blur: True
+      trainable_noise_heads: True

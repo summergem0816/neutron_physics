@@ -1,0 +1,50 @@
+data:
+  target: datasets.data_module.BaseDataModule
+  params:
+    train_config: configs/datasets/neutron_pair_train.yaml
+    val_config: configs/datasets/neutron_pair_val.yaml
+
+model:
+  config: configs/models/neutron_ae.yaml
+  resume: ~
+
+lightning:
+  seed: ~
+  mode: fit
+
+  trainer:
+    accelerator: auto
+    precision: 32
+    devices: [0]
+    strategy: auto
+    max_steps: 100001
+    val_check_interval: 20000
+    check_val_every_n_epoch: ~
+    log_every_n_steps: 50
+    accumulate_grad_batches: 1
+
+  callbacks:
+    - target: trainers.model_checkpoint.AutoencoderCheckpoint
+      params:
+        save_dir: "./checkpoints/neutron_autoencoder/"
+        save_interval: 10000
+        save_last: False
+        verbose: True
+
+    - target: pytorch_lightning.callbacks.LearningRateMonitor
+      params:
+        logging_interval: "step"
+
+    # - target: pytorch_lightning.callbacks.RichProgressBar
+      # params:
+        # leave: True
+
+    - target: pytorch_lightning.callbacks.TQDMProgressBar
+      params:
+        refresh_rate: 1
+
+  loggers:
+    - target: pytorch_lightning.loggers.TensorBoardLogger
+      params:
+        save_dir: ./logs/
+        version: "neutron_ae"

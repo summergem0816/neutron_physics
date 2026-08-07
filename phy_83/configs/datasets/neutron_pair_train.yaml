@@ -1,0 +1,20 @@
+dataset:
+  target: datasets.neutron_deg.NeutronPairDataset
+  params:
+    dataroot: "./dataset_neutron/train"
+    hq_subdir: "HQ"
+    lq_subdir: "LQ"
+    augmentation: True
+    test: False
+    patch_size: 256
+    preload: False
+
+repeat_dataset:
+  times: 1
+
+data_loader:
+  batch_size: 6
+  shuffle: true
+  num_workers: 1
+  drop_last: true
+  pin_memory: true
